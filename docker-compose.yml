@@ -1,0 +1,102 @@
+# v620-dash — telemetry + llama-swap lane control for AMD GPU boxes.
+#
+# QUICK START
+#   1. cp .env.example .env   and put a long random token in DASH_TOKEN
+#   2. edit the volumes below to match your paths
+#   3. docker compose up -d      ->  http://<host>:8500
+#
+# READ THIS FIRST — what this container is allowed to do:
+#   privileged: true   opens /dev/ipmi0 (root-only) for power/temps/fans
+#   pid: host          lets the VRAM panel name WHICH PROCESS holds memory
+#                      (it reads /proc/<pid>/fdinfo — that is the only way
+#                      to attribute VRAM per process)
+# Both are real privileges. If you only want the lane/model panels and can
+# live without power, fans and per-process VRAM, drop them and the app
+# degrades gracefully — panels report what is missing instead of crashing.
+#
+# The host-script runner (ENABLE_SCRIPTS=1) executes files on the HOST as
+# ROOT. It is OFF by default and there is no per-user permission model:
+# anyone with the token can run anything in SCRIPTS_DIR. Leave it off unless
+# you specifically want that, and never expose this port to the internet.
+
+services:
+  v620-dash:
+    image: python:3.12-slim
+    container_name: v620-dash
+    restart: unless-stopped
+
+    # --- privileges (see the note above) ---
+    privileged: true          # /dev/ipmi0
+    pid: host                 # per-process VRAM attribution
+    devices:
+      - "/dev/ipmi0:/dev/ipmi0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "8500:8500"
+
+    env_file: .env
+    environment:
+      # ---- identity ----
+      - SITE_NAME=${SITE_NAME:-V620}
+      - TZ=${TZ:-UTC}
+
+      # ---- llama-swap lanes ----------------------------------------------
+      # One lane: set LANE_URL / LANE_CONFIG and leave LANES unset.
+      # Several: LANES="name|config-path-in-container|url;name2|...|url2"
+      - LANE_URL=${LANE_URL:-http://host.docker.internal:8090}
+      - LANE_CONFIG=/lane-config/llama-swap.yaml
+      - LANE_MODELS_DIR=/lane-models
+      # Shortcut for extra lanes on the same host, expecting configs at
+      # /lane-config-lane2, /lane-config-lane3, ...
+      # - LANE_EXTRA_PORTS=8092,8096
+      # Full control (names + paths + urls):
+      # - LANES=main|/lane-config/llama-swap.yaml|http://host.docker.internal:8090;test|/lane-config-test/llama-swap.yaml|http://host.docker.internal:8092
+
+      # ---- Ollama (optional) ----------------------------------------------
+      # Leave EMPTY for a llama.cpp-only box: the Models tab, the ollama-pull
+      # form and the HF destination picker all disappear instead of erroring.
+      - OLLAMA_URL=${OLLAMA_URL:-}
+      # - OLLAMA_MODELS_DIR=/ollama-models   # exact model naming in the VRAM panel
+      # - OLLAMA_GPU_PCI=0000:04:00.0        # which card Ollama is pinned to
+
+      # ---- behaviour ----
+      - POLL_SECONDS=5
+      - DATA_DIR=/data
+      - ALLOW_MODEL_DELETE=0
+      - ALLOW_MODEL_UNLOAD=1
+      - SHOW_THERMAL_TEST=0
+      - ENABLE_SCRIPTS=0        # host-root script runner. Read the note above.
+      # - SCRIPTS_DIR=/host-scripts
+
+    working_dir: /app
+    volumes:
+      - ./app.py:/app/app.py:ro
+      - ./data:/data
+
+      # Your GGUFs. NOT read-only: the HF-import tab downloads into here.
+      - /path/to/models:/lane-models
+
+      # llama-swap's config dir. The Lane tab edits the YAML in place
+      # (insert-by-name, atomic write, structural check before saving).
+      - /path/to/llama-swap/config:/lane-config
+      # - /path/to/test-lane/config:/lane-config-test
+
+      # Optional: gpu-fan-control's folder, if you run that daemon.
+      # - /path/to/gpu-fan-control:/fanctl
+      # Optional: scripts to expose when ENABLE_SCRIPTS=1.
+      # - /path/to/scripts:/host-scripts
+
+    command:
+      - sh
+      - -c
+      - >
+        apt-get update &&
+        apt-get install -y --no-install-recommends ipmitool tzdata &&
+        pip install --no-cache-dir --root-user-action=ignore flask &&
+        exec python /app/app.py
+
+# NOTE: app.py is BIND-MOUNTED, not baked into an image, so `docker restart`
+# always picks up the file on disk. Keep it that way — a baked image makes
+# your edits invisible and is an afternoon of confusion waiting to happen.
