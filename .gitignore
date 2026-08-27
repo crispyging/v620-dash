@@ -179,3 +179,5 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# v620-dash runtime state — CSV logs and saved settings, not for publishing
+data/
